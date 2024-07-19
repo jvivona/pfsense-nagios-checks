@@ -1,5 +1,4 @@
 #!/usr/local/bin/perl -w
-# Check SMART status of ATA/SCSI/NVMe drives, returning any usable metrics as perfdata.
 # For usage information, run ./check_smart -h
 #
 # This script was initially created under contract for the US Government and is therefore Public Domain
@@ -58,15 +57,19 @@
 # Apr 29, 2023: Nick Bertrand - Show drive(s) causing UNKNOWN status using -g/--global check (6.14.0)
 # Apr 29, 2023: Claudio Kuenzler - Add possibility to hide serial number (--hide-sn) (6.14.0)
 # Apr 29, 2023: Claudio Kuenzler - Add default check on Load Cycle Count (ignore using --skip-load-cycles) (6.14.0)
+# Sep 20, 2023: Yannick Martin - Fix default Percent_Lifetime_Remain threshold handling when -w is given (6.14.1)
+# Sep 20, 2023: Claudio Kuenzler - Fix debug output for raw check list, fix --hide-serial in debug output (6.14.1)
+# Mar 15, 2024: Yannick Martin - Fix nvme check when auto interface is given and device is nvme (6.14.2)
 
 # Aug 2, 2022: Joe Vivona - Modified to run on pfSense boxes, which ar FreeBSD Based but install things like PERL in difference locations.   see line 1 above - pfSense path is  /usr/local/bin/perl
+# Jul 19 2024: Joe Vivona - merged in version 6.14.2 to pfSense version
 
 use strict;
 use Getopt::Long;
 use File::Basename qw(basename);
 
 my $basename = basename($0);
-my $revision = '6.14.0';
+my $revision = '6.14.2';
 
 # Standard Nagios return codes
 my %ERRORS=('OK'=>0,'WARNING'=>1,'CRITICAL'=>2,'UNKNOWN'=>3,'DEPENDENT'=>4);
@@ -230,7 +233,7 @@ my @raw_check_list_nvme = split /,/, $raw_check_list_nvme;
 
 # warning threshold list (for raw checks)
 my $warn_list = $opt_w // '';
-$warn_list = $opt_w // 'Percent_Lifetime_Remain=90' if $opt_l;
+															  
 my @warn_list = split /,/, $warn_list;
 my %warn_list;
 my $warn_key;
@@ -238,6 +241,9 @@ my $warn_value;
 foreach my $warn_element (@warn_list) {
   ($warn_key, $warn_value) = split /=/, $warn_element;
   $warn_list{ $warn_key } = $warn_value;
+}
+if ($opt_l && ! exists $warn_list{'Percent_Lifetime_Remain'}) {
+    $warn_list{'Percent_Lifetime_Remain'} = 90;
 }
 
 # For backward compatibility, add -b parameter to warning thresholds
@@ -282,6 +288,7 @@ foreach $device ( split("\\|",$device) ){
 		warn "###########################################################\n\n\n" if $opt_debug;
 
 		my $full_command = "$smart_command -d $interface -Hi $device";
+		$full_command = "$smart_command -d $interface -Hi $device -q noserial" if $opt_hide_sn;
 		warn "(debug) executing:\n$full_command\n\n" if $opt_debug;
 
 		my @output = `$full_command`;
@@ -324,7 +331,7 @@ foreach $device ( split("\\|",$device) ){
 					$output_mode = "nvme";
 					warn "(debug) setting output mode to nvme\n" if $opt_debug;
 				} else {
-					$output_mode = "ata";
+					$output_mode = "ata" unless $output_mode;
 				}
 				warn "(debug) parsing line:\n$line\n" if $opt_debug;
 				if ($1 eq $ok_str_ata) {
@@ -344,6 +351,7 @@ foreach $device ( split("\\|",$device) ){
 				warn "(debug) found model: $model\n\n" if $opt_debug;
 			}
 			if($line =~ /$line_model_nvme(.+)/){
+				$output_mode = "nvme";
 				warn "(debug) parsing line:\n$line\n\n" if $opt_debug;
 				$model = $1;
 				$model =~ s/\s{2,}/ /g;
@@ -367,8 +375,8 @@ foreach $device ( split("\\|",$device) ){
 				  $serial = "<HIDDEN>";
 				  warn "(debug) Hiding serial number\n\n" if $opt_debug;
 				} else {
-				$serial = $1;
-				$serial =~ s/^\s+|\s+$//g;
+				  $serial = $1;
+				  $serial =~ s/^\s+|\s+$//g;
 				}
 				warn "(debug) found serial number $serial\n\n" if $opt_debug;
 			}
@@ -472,7 +480,7 @@ foreach $device ( split("\\|",$device) ){
 		@output = `$full_command`;
 		warn "(debug) output:\n@output\n\n" if $opt_debug;
 		my @perfdata = qw//;
-		warn "(debug) Raw Check List ATA: $raw_check_list\n" if $opt_debug;
+		warn "(debug) Raw Check List ATA: @raw_check_list\n" if $opt_debug;
 		warn "(debug) Raw Check List NVMe: $raw_check_list_nvme\n" if $opt_debug;
 		warn "(debug) Exclude List for Checks: ", join(",", @exclude_checks), "\n" if $opt_debug;
 		warn "(debug) Exclude List for Perfdata: ", join(",", @exclude_perfdata), "\n" if $opt_debug;
@@ -836,7 +844,7 @@ sub print_revision {
 
 sub print_help {
         print_revision($basename,$revision);
-        print "\nUsage: $basename {-d=<block device>|-g=<block device glob>} -i=(auto|ata|scsi|3ware,N|areca,N|hpt,L/M/N|aacraid,H,L,ID|cciss,N|megaraid,N) [-r list] [-w list] [-b N] [-e list] [-E list] [--debug]\n\n";
+        print "\nUsage: $basename {-d=<block device>|-g=<block device glob>} -i=(auto|ata|scsi|3ware,N|areca,N|hpt,L/M/N|aacraid,H,L,ID|cciss,N|megaraid,N) [-r list] [-w list] [-b N] [-e list] [-E list] [-s] [-l] [--debug]\n\n";
         print "At least one of the below. -d supersedes -g\n";
         print "  -d/--device: a physical block device to be SMART monitored, eg /dev/sda. Pseudo-device /dev/bus/N is allowed.\n";
         print "  -g/--global: a glob pattern name of physical devices to be SMART monitored\n";
